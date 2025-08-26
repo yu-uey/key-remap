@@ -17,10 +17,16 @@ fn find_device(search: &str) -> io::Result<Option<Device>> {
     Ok(None)
 }
 
+enum Spc {
+    None,
+    Spc,
+    Ctrl,
+}
+
 fn main() -> Result<(), io::Error> {
     println!("Hello, world!");
 
-    let Some(d) = find_device("keyboard")? else {
+    let Some(mut d) = find_device("keyboard")? else {
         println!("No matching device found");
         return Ok(());
     };
@@ -29,19 +35,31 @@ fn main() -> Result<(), io::Error> {
     const SPACE: EventCode = EventCode::EV_KEY(EV_KEY::KEY_SPACE);
     const LCTRL: EventCode = EventCode::EV_KEY(EV_KEY::KEY_LEFTCTRL);
 
+    d.grab(evdev_rs::GrabMode::Grab)?;
+    let mut state = Spc::None;
     loop {
         let (_,ev) = d.next_event(ReadFlag::NORMAL | ReadFlag::BLOCKING)?;
-        let (pass, extra) = match (ev.value, ev.event_code) {
-            // map space -> lctrl
-            (v, SPACE) => (false, Some(InputEvent {
-                time: ev.time,
-                event_code: LCTRL,
-                value: v,
-            })),
-            _ => (true, None),
+        let (ns, pass, extra) = match (&state, ev.value, ev.event_code) {
+            // space pressed => hold state
+            (Spc::None, 1, SPACE) => (Spc::Spc, false, None),
+            // space released as space => press spc + forward
+            (Spc::Spc, 0, SPACE) => (Spc::None, true, Some((SPACE, 1))),
+            // space released as ctrl => release ctrl
+            (Spc::Ctrl, 0, SPACE) => (Spc::None, false, Some((LCTRL, 0))),
+            // any key simul with space => press ctrl + forward
+            (Spc::Spc, 1, _) => (Spc::Ctrl, true, Some((LCTRL, 1))),
+            // space repeat => noop
+            (_, 2, SPACE) => (state, false, None),
+            // anything else => forward
+            _ => (state, true, None),
         };
-        if let Some(extra_ev) = extra {
-            v.write_event(&extra_ev)?;
+        state = ns;
+        if let Some((key,press)) = extra {
+            v.write_event(&InputEvent {
+                time: ev.time,
+                event_code: key,
+                value: press,
+            })?;
         }
         if pass {
             v.write_event(&ev)?;
@@ -51,5 +69,7 @@ fn main() -> Result<(), io::Error> {
             event_code: EventCode::EV_SYN(EV_SYN::SYN_REPORT),
             value: 0,
         })?;
-    }
+    };
+    // ungrabbed automatically when program is killed
+    // d.grab(evdev_rs::GrabMode::Ungrab)?;
 }
