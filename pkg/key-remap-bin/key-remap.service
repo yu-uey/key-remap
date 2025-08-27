@@ -1,0 +1,8 @@
+[Unit]
+Description=Remaps caps lock and space keys to left control
+
+[Service]
+ExecStart=/usr/bin/key-remap
+
+[Install]
+WantedBy=multi-user.target
