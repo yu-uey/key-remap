@@ -32,6 +32,7 @@ fn main() -> Result<(), io::Error> {
     };
     let v = UInputDevice::create_from_device(&d)?;
 
+    const CAPS: EventCode = EventCode::EV_KEY(EV_KEY::KEY_CAPSLOCK);
     const SPACE: EventCode = EventCode::EV_KEY(EV_KEY::KEY_SPACE);
     const LCTRL: EventCode = EventCode::EV_KEY(EV_KEY::KEY_LEFTCTRL);
 
@@ -39,7 +40,12 @@ fn main() -> Result<(), io::Error> {
     let mut state = Spc::None;
     loop {
         let (_,ev) = d.next_event(ReadFlag::NORMAL | ReadFlag::BLOCKING)?;
-        let (ns, pass, extra) = match (&state, ev.value, ev.event_code) {
+        let (ns, pass, extra) = match (state, ev.value, ev.event_code) {
+            // capslock => ctrl
+            (s, p, CAPS) => (s, false, Some((LCTRL, p))),
+            // ctrl => capslock
+            (s, p, LCTRL) => (s, false, Some((CAPS, p))),
+
             // space pressed => hold state
             (Spc::None, 1, SPACE) => (Spc::Spc, false, None),
             // space released as space => press spc + forward
@@ -49,9 +55,10 @@ fn main() -> Result<(), io::Error> {
             // any key simul with space => press ctrl + forward
             (Spc::Spc, 1, _) => (Spc::Ctrl, true, Some((LCTRL, 1))),
             // space repeat => noop
-            (_, 2, SPACE) => (state, false, None),
+            (s, 2, SPACE) => (s, false, None),
+
             // anything else => forward
-            _ => (state, true, None),
+            (s, _, _) => (s, true, None),
         };
         state = ns;
         if let Some((key,press)) = extra {
