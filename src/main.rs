@@ -22,6 +22,12 @@ enum State {
     P(TimeVal), // press
     H, // hold
 }
+enum Action {
+    Press,
+    Release,
+    Tap,
+    None,
+}
 
 trait TapTerm {
     fn past(&self, prev:&TimeVal, us:i64) -> bool;
@@ -42,41 +48,66 @@ fn main() -> Result<(), io::Error> {
     let v = UInputDevice::create_from_device(&d)?;
 
     const CAPS: EventCode = EventCode::EV_KEY(EV_KEY::KEY_CAPSLOCK);
-    const SPACE: EventCode = EventCode::EV_KEY(EV_KEY::KEY_SPACE);
     const LCTRL: EventCode = EventCode::EV_KEY(EV_KEY::KEY_LEFTCTRL);
+    const ESC: EventCode = EventCode::EV_KEY(EV_KEY::KEY_ESC);
 
     const TAPTERM: i64 = 100 * 1000;
+    
+    const KEY: EventCode = CAPS;
+    const TAP: EventCode = ESC;
+    const HOLD: EventCode = LCTRL;
     
     let mut s = State::R;
     d.grab(evdev_rs::GrabMode::Grab)?;
     loop {
         let (_,ev) = d.next_event(ReadFlag::NORMAL | ReadFlag::BLOCKING)?;
-        let (ns, pass, pre) = match (&s, ev.event_code, ev.value) {
-            // capslock => ctrl
-            (_, CAPS, p) => (s, false, Some((LCTRL, p))),
-            // ctrl => capslock
-            (_, LCTRL, p) => (s, false, Some((CAPS, p))),
-
+        let (ns, pass, extra) = match (&s, ev.event_code, ev.value) {
             // start motion
-            (State::R, SPACE, 1) => (State::P(ev.time), false, None),
+            (State::R, KEY, 1) => (State::P(ev.time), false, Action::None),
             // other key pressed during hold
-            (State::P(t), _, 1) if ev.time.past(t, TAPTERM) => (State::H, true, Some((LCTRL, 1))),
+            // => start hold + pass key
+            (State::P(t), _, 1) if ev.time.past(t, TAPTERM) => (State::H, true, Action::Press),
             // other key pressed during tap
-            (State::P(_), _, 1) => (State::R, true, Some((SPACE, 1))),
+            // => send tap + pass key
+            (State::P(_), _, 1) => (State::R, true, Action::Tap),
             // release after nothing
-            (State::P(_), SPACE, 0) => (State::R, true, Some((SPACE, 1))),
+            // => send tap
+            (State::P(_), KEY, 0) => (State::R, false, Action::Tap),
             // release after hold
-            (State::H, SPACE, 0) => (State::R, false, Some((LCTRL, 0))),
-            _ => (s, true, None),
+            // => release hold
+            (State::H, KEY, 0) => (State::R, false, Action::Release),
+            _ => (s, true, Action::None),
         };
         s = ns;
-        if let Some((key,press)) = pre {
-            v.write_event(&InputEvent {
-                time: ev.time,
-                event_code: key,
-                value: press,
-            })?;
-        }
+        match extra {
+            Action::Press => {
+                v.write_event(&InputEvent {
+                    event_code: HOLD,
+                    value: 1,
+                    time: ev.time,
+                })?;
+            },
+            Action::Release => {
+                v.write_event(&InputEvent {
+                    event_code: HOLD,
+                    value: 0,
+                    time: ev.time,
+                })?;
+            },
+            Action::Tap => {
+                v.write_event(&InputEvent {
+                    event_code: TAP,
+                    value: 1,
+                    time: ev.time,
+                })?;
+                v.write_event(&InputEvent {
+                    event_code: TAP,
+                    value: 0,
+                    time: ev.time,
+                })?;
+            },
+            _ => (),
+        };
         if pass {
             v.write_event(&ev)?;
         }
