@@ -1,16 +1,38 @@
 #include <asm-generic/errno-base.h>
 #include <fcntl.h>
+#include <linux/input-event-codes.h>
 #include <stdio.h>
 #include <libevdev/libevdev.h>
 #include <libevdev/libevdev-uinput.h>
 #include <string.h>
 
-void handle_ev(const struct libevdev *dev, const struct libevdev_uinput *uidev,
-               const struct input_event *ev) {
-  printf("Event: type %d (%s), code %d (%s), value %d\n", ev->type,
-         libevdev_event_type_get_name(ev->type), ev->code,
-         libevdev_event_code_get_name(ev->type, ev->code), ev->value);
-  libevdev_uinput_write_event(uidev, ev->type, ev->code, ev->value);
+char key_state = 0;
+
+void handle_key(const struct libevdev *dev, const struct libevdev_uinput *uidev,
+                unsigned int code, int value) {
+  if (code == KEY_D) {
+    if (key_state == 0 && value == 1) {
+      // key pressed while in "released" state -> enter "pressed" state
+      key_state = 1;
+    } else if (key_state == 1 && value == 0) {
+      // key released from "pressed" -> tap key
+      key_state = 0;
+      libevdev_uinput_write_event(uidev, EV_KEY, KEY_D, 1);
+      libevdev_uinput_write_event(uidev, EV_KEY, KEY_D, 0);
+    } else if (key_state == 2 && value == 0) {
+      // key released from "holding" -> release mod
+      key_state = 0;
+      libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 0);
+    }
+  } else if (key_state == 1 && value == 1) {
+    // other key pressed while in "pressing" state -> start "holding" mod
+    key_state = 2;
+    libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 1);
+    libevdev_uinput_write_event(uidev, EV_KEY, code, 1);
+  } else {
+    // otherwise, pass the event through
+    libevdev_uinput_write_event(uidev, EV_KEY, code, value);
+  }
 }
 
 int main(int argc, char **argv) {
@@ -57,7 +79,12 @@ int main(int argc, char **argv) {
         dev, LIBEVDEV_READ_FLAG_NORMAL | LIBEVDEV_READ_FLAG_BLOCKING, &ev);
 
     if (rc == LIBEVDEV_READ_STATUS_SUCCESS) {
-      handle_ev(dev, uidev, &ev);
+      // Always pass non-key events 
+      if (ev.type == EV_KEY) {
+	handle_key(dev, uidev, ev.code, ev.value);
+      } else {
+	libevdev_uinput_write_event(uidev, ev.type, ev.code, ev.value);
+      }
     }
   } while (rc == LIBEVDEV_READ_STATUS_SYNC || rc == LIBEVDEV_READ_STATUS_SUCCESS || rc == -EAGAIN);
 
