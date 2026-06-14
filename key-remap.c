@@ -14,55 +14,74 @@ unsigned int tracked_keys = 0;
 
 void handle_key(const struct libevdev *dev, const struct libevdev_uinput *uidev,
                 unsigned int code, int value) {
-  if (code == KEY_D) {
-    if (key_state == 0 && value == 1) {
-      // key pressed while in "released" state -> enter "pressed" state
-      key_state = 1;
-      tracked_keys = 0;
-    } else if (key_state == 1 && value == 0) {
-      // key released from "pressed" -> tap key
-      key_state = 0;
-      libevdev_uinput_write_event(uidev, EV_KEY, KEY_D, 1);
-      libevdev_uinput_write_event(uidev, EV_KEY, KEY_D, 0);
-
-      // press tracked keys in order
-      for (int i = 0; i < tracked_keys; i++) {
-	libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
+  if (key_state == 0) {
+    // STATE "released": mod-tap button is not held.
+    if (code == KEY_D) {
+      if (value == 1) {
+	// button pressed -> enter "pressed" state
+	key_state = 1;
+	tracked_keys = 0;
       }
-    } else if (key_state == 2 && value == 0) {
-      // key released from "holding" -> release mod
-      key_state = 0;
-      libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 0);
+    } else {
+      // other keys are passed through
+      libevdev_uinput_write_event(uidev, EV_KEY, code, value);
     }
   } else if (key_state == 1) {
-    // "pressed" state waits for other key release
-    if (value == 1) {
-      // track other keys pressed while mod-tap is in "pressed" state
-      tracked_key[tracked_keys] = code;
-      if (tracked_keys < 9) tracked_keys++;
-    } else if (value == 0) {
-      // check if released key is tracked (pressed after mod-tap)
-      char tracked = 0;
-      for (int i = 0; i < tracked_keys; i++) {
-	if (code == tracked_key[i]) {
-	  tracked = 1;
-	  break;
+    // STATE "pressed": button is held. No events passed through until decision.
+    if (code == KEY_D) {
+      if (value == 0) {
+	// button released -> tap key
+	key_state = 0;
+	libevdev_uinput_write_event(uidev, EV_KEY, KEY_D, 1);
+	libevdev_uinput_write_event(uidev, EV_KEY, KEY_D, 0);
+
+	// send tracked key presses in order
+	for (int i = 0; i < tracked_keys; i++) {
+	  libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
 	}
       }
-      if (tracked) {
-	// "pressing" state -> start "holding" mod
-	key_state = 2;
-        libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 1);
-        for (int i = 0; i < tracked_keys; i++) {
-	  libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
+    } else {
+      // other key event during "pressed" state
+      if (value == 1) {
+	// track other keys pressed while mod-tap is in "pressed" state
+	// tracked keys are only sent when exiting "pressed" state
+	tracked_key[tracked_keys] = code;
+        if (tracked_keys < 9) {
+          tracked_keys++;
+	}
+      } else if (value == 0) {
+	// tracked key released -> start "holding" mod
+	char tracked = 0;
+	for (int i = 0; i < tracked_keys; i++) {
+	  if (code == tracked_key[i]) {
+	    tracked = 1;
+	    break;
+	  }
+	}
+	if (tracked) {
+          key_state = 2;
+	  // send mod + all tracked keys during "pressed" state
+	  libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 1);
+	  for (int i = 0; i < tracked_keys; i++) {
+	    libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
+          }
         }
+	// release event is always passed through
+	libevdev_uinput_write_event(uidev, EV_KEY, code, value);
       }
-      // always pass release event
-      libevdev_uinput_write_event(uidev, EV_KEY, code, 0);
     }
-  } else {
-    // otherwise, pass the event through
-    libevdev_uinput_write_event(uidev, EV_KEY, code, value);
+  } else if (key_state == 2) {
+    // STATE "holding": button is held and mod key has been sent.
+    if (code == KEY_D) {
+      if (value == 0) {
+	// button released -> release mod
+	key_state = 0;
+	libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 0);
+      }
+    } else {
+      // other keys are passed through
+      libevdev_uinput_write_event(uidev, EV_KEY, code, value);
+    }
   }
 }
 
