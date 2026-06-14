@@ -1,6 +1,5 @@
-#include <asm-generic/errno-base.h>
+#include <errno.h>
 #include <fcntl.h>
-#include <linux/input-event-codes.h>
 #include <stdio.h>
 #include <libevdev/libevdev.h>
 #include <libevdev/libevdev-uinput.h>
