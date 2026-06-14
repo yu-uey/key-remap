@@ -6,7 +6,11 @@
 #include <libevdev/libevdev-uinput.h>
 #include <string.h>
 
+// mod-tap state
 char key_state = 0;
+// track keys that are pressed after a mod-tap is pressed
+unsigned int tracked_key[10];
+unsigned int tracked_keys = 0;
 
 void handle_key(const struct libevdev *dev, const struct libevdev_uinput *uidev,
                 unsigned int code, int value) {
@@ -14,21 +18,48 @@ void handle_key(const struct libevdev *dev, const struct libevdev_uinput *uidev,
     if (key_state == 0 && value == 1) {
       // key pressed while in "released" state -> enter "pressed" state
       key_state = 1;
+      tracked_keys = 0;
     } else if (key_state == 1 && value == 0) {
       // key released from "pressed" -> tap key
       key_state = 0;
       libevdev_uinput_write_event(uidev, EV_KEY, KEY_D, 1);
       libevdev_uinput_write_event(uidev, EV_KEY, KEY_D, 0);
+
+      // press tracked keys in order
+      for (int i = 0; i < tracked_keys; i++) {
+	libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
+      }
     } else if (key_state == 2 && value == 0) {
       // key released from "holding" -> release mod
       key_state = 0;
       libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 0);
     }
-  } else if (key_state == 1 && value == 1) {
-    // other key pressed while in "pressing" state -> start "holding" mod
-    key_state = 2;
-    libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 1);
-    libevdev_uinput_write_event(uidev, EV_KEY, code, 1);
+  } else if (key_state == 1) {
+    // "pressed" state waits for other key release
+    if (value == 1) {
+      // track other keys pressed while mod-tap is in "pressed" state
+      tracked_key[tracked_keys] = code;
+      if (tracked_keys < 9) tracked_keys++;
+    } else if (value == 0) {
+      // check if released key is tracked (pressed after mod-tap)
+      char tracked = 0;
+      for (int i = 0; i < tracked_keys; i++) {
+	if (code == tracked_key[i]) {
+	  tracked = 1;
+	  break;
+	}
+      }
+      if (tracked) {
+	// "pressing" state -> start "holding" mod
+	key_state = 2;
+        libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 1);
+        for (int i = 0; i < tracked_keys; i++) {
+	  libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
+        }
+      }
+      // always pass release event
+      libevdev_uinput_write_event(uidev, EV_KEY, code, 0);
+    }
   } else {
     // otherwise, pass the event through
     libevdev_uinput_write_event(uidev, EV_KEY, code, value);
