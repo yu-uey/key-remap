@@ -6,82 +6,85 @@
 #include <libevdev/libevdev-uinput.h>
 #include <string.h>
 
-// mod-tap state
-char key_state = 0;
 // track keys that are pressed after a mod-tap is pressed
 unsigned int tracked_key[10];
 unsigned int tracked_keys = 0;
 
-void handle_key(const struct libevdev *dev, const struct libevdev_uinput *uidev,
-                unsigned int code, int value) {
-  if (key_state == 0) {
-    // STATE "released": mod-tap button is not held.
-    if (code == KEY_D) {
+typedef struct {
+  unsigned int tap;
+  unsigned int mod;
+  char active;
+} modtap;
+
+modtap modtaps[] = {
+    {KEY_D, KEY_LEFTCTRL, 0},
+    {KEY_K, KEY_LEFTCTRL, 0},
+};
+
+modtap *get_modtap(unsigned int code) {
+  for (int i = 0; i < sizeof(modtaps) / sizeof(modtap); i++) {
+    if (modtaps[i].tap == code) {
+      return &modtaps[i];
+    }
+  }
+  return NULL;
+}
+
+void handle_key(const struct libevdev_uinput *uidev, const unsigned int code,
+                const int value) {
+  if (tracked_keys < 1) {
+    modtap *mt = get_modtap(code);
+    if (mt != NULL) {
+      // start tracking keys if mod-tap key is pressed
       if (value == 1) {
-	// button pressed -> enter "pressed" state
-	key_state = 1;
 	tracked_keys = 0;
+	tracked_key[tracked_keys++] = code;
+      } else if (value == 0) {
+	// check mod-tap state on release
+	libevdev_uinput_write_event(uidev, EV_KEY, (mt->active ? mt->mod : mt->tap), 0);
       }
+      // ignore mod-tap key's repeat events
     } else {
-      // other keys are passed through
+      // not mod-tap => pass key event through
       libevdev_uinput_write_event(uidev, EV_KEY, code, value);
     }
-  } else if (key_state == 1) {
-    // STATE "pressed": button is held. No events passed through until decision.
-    if (code == KEY_D) {
-      if (value == 0) {
-	// button released -> tap key
-	key_state = 0;
-	libevdev_uinput_write_event(uidev, EV_KEY, KEY_D, 1);
-	libevdev_uinput_write_event(uidev, EV_KEY, KEY_D, 0);
-
-	// send tracked key presses in order
-	for (int i = 0; i < tracked_keys; i++) {
-	  libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
-	}
-      }
-    } else {
-      // other key event during "pressed" state
-      if (value == 1) {
-	// track other keys pressed while mod-tap is in "pressed" state
-	// tracked keys are only sent when exiting "pressed" state
-	tracked_key[tracked_keys] = code;
-        if (tracked_keys < 9) {
-          tracked_keys++;
-	}
-      } else if (value == 0) {
-	// tracked key released -> start "holding" mod
-	char tracked = 0;
-	for (int i = 0; i < tracked_keys; i++) {
-	  if (code == tracked_key[i]) {
-	    tracked = 1;
-	    break;
-	  }
-	}
-	if (tracked) {
-          key_state = 2;
-	  // send mod + all tracked keys during "pressed" state
-	  libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 1);
-	  for (int i = 0; i < tracked_keys; i++) {
-	    libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
-          }
+  } else {
+    if (value == 1) {
+      // track newly pressed keys
+      tracked_key[tracked_keys++] = code;
+    } else if (value == 0) {
+      // collapse queue on release of tracked key
+      char tracked = -1;
+      for (int i = tracked_keys - 1; i >= 0; i--) {
+        if (code == tracked_key[i]) {
+          tracked = i;
+	  break;
         }
-	// release event is always passed through
+      }
+      if (tracked != -1) {
+        // press all preceding tracked keys with mod-taps as mod
+        for (int i = 0; i < tracked; i++) {
+          unsigned int key = tracked_key[i];
+          modtap *mt = get_modtap(key);
+          if (mt != NULL) {
+            key = mt->mod;
+	    mt->active = 1;
+          }
+	  libevdev_uinput_write_event(uidev, EV_KEY, key, 1);
+        }
+	// press all proceeding tracked keys as is
+        for (int i = tracked; i < tracked_keys; i++) {
+	  libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
+        }
+        // then release original event
+        libevdev_uinput_write_event(uidev, EV_KEY, code, 0);
+	tracked_keys = 0;
+      } else {
+        // if not tracked, pass through
 	libevdev_uinput_write_event(uidev, EV_KEY, code, value);
       }
     }
-  } else if (key_state == 2) {
-    // STATE "holding": button is held and mod key has been sent.
-    if (code == KEY_D) {
-      if (value == 0) {
-	// button released -> release mod
-	key_state = 0;
-	libevdev_uinput_write_event(uidev, EV_KEY, KEY_LEFTCTRL, 0);
-      }
-    } else {
-      // other keys are passed through
-      libevdev_uinput_write_event(uidev, EV_KEY, code, value);
-    }
+    // ignore key repeats during tracking
   }
 }
 
@@ -131,7 +134,7 @@ int main(int argc, char **argv) {
     if (rc == LIBEVDEV_READ_STATUS_SUCCESS) {
       // Always pass non-key events 
       if (ev.type == EV_KEY) {
-	handle_key(dev, uidev, ev.code, ev.value);
+	handle_key(uidev, ev.code, ev.value);
       } else {
 	libevdev_uinput_write_event(uidev, ev.type, ev.code, ev.value);
       }
