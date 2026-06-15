@@ -58,43 +58,40 @@ void handle_key(const struct libevdev_uinput *uidev, const unsigned int code,
       // track newly pressed keys
       tracked_key[tracked_keys++] = code;
     } else if (value == 0) {
-      // collapse queue on release of tracked key
-      char tracked = -1;
-      for (int i = tracked_keys - 1; i >= 0; i--) {
+      // collapse queue on release of any key
+      // if released key was not tracked, all keys are pressed as taps
+      // collapsing on non-tracked keys makes uppercase homerow letters easier to type
+      char tracked = 0;
+      for (int i = tracked_keys - 1; i > 0; i--) {
         if (code == tracked_key[i]) {
           tracked = i;
-	  break;
+          break;
         }
       }
-      if (tracked != -1) {
-        // press all preceding tracked keys with mod-taps as mod
-        for (int i = 0; i < tracked; i++) {
-          unsigned int key = tracked_key[i];
-          modtap *mt = get_modtap(key);
-          if (mt != NULL) {
-            key = mt->mod;
-	    mt->active = 1;
-          }
-	  libevdev_uinput_write_event(uidev, EV_KEY, key, 1);
-        }
-	// press all proceeding tracked keys as is
-        for (int i = tracked; i < tracked_keys; i++) {
-	  libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
-        }
-        // then release original event
-        modtap *mt = get_modtap(code);
+      // press all preceding tracked keys with mod-taps as mod
+      for (int i = 0; i < tracked; i++) {
+        unsigned int key = tracked_key[i];
+        modtap *mt = get_modtap(key);
         if (mt != NULL) {
-          libevdev_uinput_write_event(uidev, EV_KEY,
-                                      (mt->active ? mt->mod : mt->tap), 0);
-	  mt->active = 0;
-        } else {
-	  libevdev_uinput_write_event(uidev, EV_KEY, code, 0);
+          key = mt->mod;
+          mt->active = 1;
         }
-	tracked_keys = 0;
-      } else {
-        // if not tracked, pass through
-	libevdev_uinput_write_event(uidev, EV_KEY, code, value);
+        libevdev_uinput_write_event(uidev, EV_KEY, key, 1);
       }
+      // press all proceeding tracked keys as taps
+      for (int i = tracked; i < tracked_keys; i++) {
+        libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
+      }
+      // then release original event
+      modtap *mt = get_modtap(code);
+      if (mt != NULL) {
+        libevdev_uinput_write_event(uidev, EV_KEY,
+                                    (mt->active ? mt->mod : mt->tap), 0);
+        mt->active = 0;
+      } else {
+        libevdev_uinput_write_event(uidev, EV_KEY, code, 0);
+      }
+      tracked_keys = 0;
     }
     // ignore key repeats during tracking
   }
