@@ -18,6 +18,10 @@ typedef struct {
 modtap modtaps[] = {
     {KEY_D, KEY_LEFTCTRL, 0},
     {KEY_K, KEY_LEFTCTRL, 0},
+    {KEY_S, KEY_LEFTALT, 0},
+    {KEY_L, KEY_LEFTALT, 0},
+    {KEY_A, KEY_LEFTMETA, 0},
+    {KEY_SEMICOLON, KEY_LEFTMETA, 0},
 };
 
 modtap *get_modtap(unsigned int code) {
