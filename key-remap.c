@@ -40,7 +40,9 @@ void handle_key(const struct libevdev_uinput *uidev, const unsigned int code,
 	tracked_key[tracked_keys++] = code;
       } else if (value == 0) {
 	// check mod-tap state on release
-	libevdev_uinput_write_event(uidev, EV_KEY, (mt->active ? mt->mod : mt->tap), 0);
+        libevdev_uinput_write_event(uidev, EV_KEY,
+                                    (mt->active ? mt->mod : mt->tap), 0);
+	mt->active = 0;
       }
       // ignore mod-tap key's repeat events
     } else {
@@ -76,7 +78,14 @@ void handle_key(const struct libevdev_uinput *uidev, const unsigned int code,
 	  libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
         }
         // then release original event
-        libevdev_uinput_write_event(uidev, EV_KEY, code, 0);
+        modtap *mt = get_modtap(code);
+        if (mt != NULL) {
+          libevdev_uinput_write_event(uidev, EV_KEY,
+                                      (mt->active ? mt->mod : mt->tap), 0);
+	  mt->active = 0;
+        } else {
+	  libevdev_uinput_write_event(uidev, EV_KEY, code, 0);
+        }
 	tracked_keys = 0;
       } else {
         // if not tracked, pass through
