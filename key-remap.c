@@ -97,12 +97,44 @@ void handle_key(const struct libevdev_uinput *uidev, const unsigned int code,
   }
 }
 
+int start_uinput_grab(struct libevdev *dev, struct libevdev_uinput **uidev) {
+  int rc;
+  // Create uinput device
+  rc = libevdev_uinput_create_from_device(dev, LIBEVDEV_UINPUT_OPEN_MANAGED,
+                                          uidev);
+  if (rc < 0) {
+    fprintf(stderr, "Failed to init uinput device (%s)\n", strerror(-rc));
+    return rc;
+  }
+  // Grab evdev device
+  rc = libevdev_grab(dev, LIBEVDEV_GRAB);
+  if (rc < 0) {
+    fprintf(stderr, "Failed to grab evdev device (%s)\n", strerror(-rc));
+    return rc;
+  }
+  return 0;
+}
+
+int stop_uinput_grab(struct libevdev *dev, struct libevdev_uinput *uidev) {
+  int rc;
+  // Ungrab evdev device
+  rc = libevdev_grab(dev, LIBEVDEV_UNGRAB);
+  if (rc < 0) {
+    fprintf(stderr, "Failed to ungrab evdev device (%s)\n", strerror(-rc));
+    return rc;
+  }
+  // Destroy uinput device
+  libevdev_uinput_destroy(uidev);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   struct libevdev *dev = NULL;
   struct libevdev_uinput *uidev = NULL;
   const char *file;
   int fd;
   int rc = 1;
+  char grab_active = 1;
 
   // Open the file
   if (argc < 2) {
@@ -125,15 +157,9 @@ int main(int argc, char **argv) {
   printf("Input device ID: bus %#x vendor %#x product %#x\n",
          libevdev_get_id_bustype(dev), libevdev_get_id_vendor(dev),
          libevdev_get_id_product(dev));
-  libevdev_grab(dev, LIBEVDEV_GRAB);
 
-  // Create uinput device
-  rc = libevdev_uinput_create_from_device(dev, LIBEVDEV_UINPUT_OPEN_MANAGED,
-                                          &uidev);
-  if (rc < 0) {
-    fprintf(stderr, "Failed to init uinput device (%s)\n", strerror(-rc));
-    goto out;
-  }
+  rc = start_uinput_grab(dev, &uidev);
+  if (rc) goto out;
 
   do {
     struct input_event ev;
@@ -141,11 +167,25 @@ int main(int argc, char **argv) {
         dev, LIBEVDEV_READ_FLAG_NORMAL | LIBEVDEV_READ_FLAG_BLOCKING, &ev);
 
     if (rc == LIBEVDEV_READ_STATUS_SUCCESS) {
-      // Always pass non-key events 
-      if (ev.type == EV_KEY) {
-	handle_key(uidev, ev.code, ev.value);
-      } else {
-	libevdev_uinput_write_event(uidev, ev.type, ev.code, ev.value);
+      // Only relay to uinput while grab is active
+      // Toggle grab activation with special key release
+      if (ev.type == EV_KEY && ev.code == KEY_F9 && ev.value == 0) {
+        if (grab_active) {
+          rc = stop_uinput_grab(dev, uidev);
+          if (rc) goto out;
+	  grab_active = 0;
+        } else {
+          rc = start_uinput_grab(dev, &uidev);
+	  if (rc) goto out;
+	  grab_active = 1;
+        }
+      } else if (grab_active) {
+	// Handle key events, pass through non-key events
+	if (ev.type == EV_KEY) {
+	  handle_key(uidev, ev.code, ev.value);
+	} else {
+	  libevdev_uinput_write_event(uidev, ev.type, ev.code, ev.value);
+	}
       }
     }
   } while (rc == LIBEVDEV_READ_STATUS_SYNC || rc == LIBEVDEV_READ_STATUS_SUCCESS || rc == -EAGAIN);
