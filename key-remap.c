@@ -141,6 +141,12 @@ int start_uinput_grab(struct libevdev *dev, struct libevdev_uinput **uidev) {
 }
 
 int stop_uinput_grab(struct libevdev *dev, struct libevdev_uinput *uidev) {
+  // Reset state
+  tracked_keys = 0;
+  for (int i = 0; i < n_modtaps; i++) {
+    modtaps[i].active = 0;
+    modtaps[i].time_ms = 0;
+  }
   int rc;
   // Ungrab evdev device
   rc = libevdev_grab(dev, LIBEVDEV_UNGRAB);
@@ -228,7 +234,7 @@ int main(int argc, char **argv) {
 	}
       }
     }
-  } while (rc == LIBEVDEV_READ_STATUS_SYNC || rc == LIBEVDEV_READ_STATUS_SUCCESS || rc == -EAGAIN);
+  } while (rc == LIBEVDEV_READ_STATUS_SUCCESS || rc == -EAGAIN);
 
 out:
   libevdev_uinput_destroy(uidev);
