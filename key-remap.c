@@ -4,6 +4,8 @@
 #include <libevdev/libevdev.h>
 #include <libevdev/libevdev-uinput.h>
 #include <string.h>
+#include <poll.h>
+#include <time.h>
 
 // track keys that are pressed after a mod-tap is pressed
 unsigned int tracked_key[10];
@@ -13,8 +15,7 @@ typedef struct {
   const unsigned int tap;
   const unsigned int mod;
   char active;
-  long tv_sec;
-  long tv_usec;
+  long time_ms;
 } modtap;
 
 modtap modtaps[] = {
@@ -46,8 +47,7 @@ void handle_key(const struct libevdev_uinput *uidev, const struct input_event *e
     // (This branch is only reached if tracking is active or key is mod-tap)
     tracked_key[tracked_keys++] = ev->code;
     if (mt != NULL) {
-      mt->tv_sec = ev->time.tv_sec;
-      mt->tv_usec = ev->time.tv_usec;
+      mt->time_ms = ev->time.tv_sec * 1e3 + ev->time.tv_usec / 1e3;
     }
   } else if (ev->value == 0) {
     if (tracked_keys > 0) {
@@ -63,23 +63,19 @@ void handle_key(const struct libevdev_uinput *uidev, const struct input_event *e
       }
       // press all preceding tracked keys with mod-taps as mod
       for (int i = 0; i < tracked; i++) {
-        unsigned int key = tracked_key[i];
-        modtap *mt = get_modtap(key);
-        if (mt != NULL) {
-          key = mt->mod;
-          mt->active = 1;
-        }
-        libevdev_uinput_write_event(uidev, EV_KEY, key, 1);
-      }
-      // Check tap-term and send as mod if needed
-      if (mt != NULL && !mt->active && mt->tv_sec) {
-        long dt = (ev->time.tv_sec - mt->tv_sec) * 1e6 +
-                  (ev->time.tv_usec - mt->tv_usec);
-	if (dt > 250 * 1e3) {
-          mt->active = 1;
+        modtap *mt = get_modtap(tracked_key[i]);
+        if (mt == NULL) {
+	  // Not mod tap => send press
+	  libevdev_uinput_write_event(uidev, EV_KEY, tracked_key[i], 1);
+        } else if (!mt->active) {
+	  // Mod-tap => send press only if not already active (by tap-term)
+	  mt->active = 1;
 	  libevdev_uinput_write_event(uidev, EV_KEY, mt->mod, 1);
-	  tracked++; // if sending here, skip this press in the next part
-	}
+        }
+      }
+      // If active (by tap-term), skip sending
+      if (mt != NULL && mt->active) {
+	tracked++;
       }
       // Press released key and all proceeding keys as is
       for (int i = tracked; i < tracked_keys; i++) {
@@ -92,13 +88,38 @@ void handle_key(const struct libevdev_uinput *uidev, const struct input_event *e
       // Release of mod-tap key => check state and tap-term
       libevdev_uinput_write_event(uidev, EV_KEY, (mt->active ? mt->mod : mt->tap), 0);
       mt->active = 0;
-      mt->tv_sec = 0;
-      mt->tv_usec = 0;
+      mt->time_ms = 0;
     } else {
       // Release of any other key
       libevdev_uinput_write_event(uidev, EV_KEY, ev->code, 0);
     }
   }
+}
+
+// Returns the timeout (ms) until next tap-term event (-1 if none)
+int handle_tapterm(const struct libevdev_uinput *uidev) {
+  int timeout = -1;
+  struct timespec tp;
+  long now;
+
+  clock_gettime(0, &tp);
+  now = tp.tv_sec * 1e3 + tp.tv_nsec / 1e6;
+
+  for (int i = 0; i < n_modtaps; i++) {
+    if (!modtaps[i].active && modtaps[i].time_ms) {
+      long delta = 250l + modtaps[i].time_ms - now;
+      if (delta <= 0) {
+        // Send mod key if tap-term expired
+	modtaps[i].active = 1;
+        libevdev_uinput_write_event(uidev, EV_KEY, modtaps[i].mod, 1);
+	libevdev_uinput_write_event(uidev, EV_SYN, SYN_REPORT, 0);
+      } else if (delta > timeout) {
+        // Otherwise, set timeout to the next soonest tap-term
+	timeout = delta;
+      }
+    }
+  }
+  return timeout;
 }
 
 int start_uinput_grab(struct libevdev *dev, struct libevdev_uinput **uidev) {
@@ -136,7 +157,9 @@ int main(int argc, char **argv) {
   struct libevdev *dev = NULL;
   struct libevdev_uinput *uidev = NULL;
   const char *file;
-  int fd;
+  struct pollfd fds = {
+    .events = POLLIN,
+  };
   int rc = 1;
   char grab_active = 1;
 
@@ -145,14 +168,14 @@ int main(int argc, char **argv) {
     goto out;
   }
   file = argv[1];
-  fd = open(file, O_RDONLY);
-  if (fd < 0) {
+  fds.fd = open(file, O_RDONLY | O_NONBLOCK);
+  if (fds.fd < 0) {
     perror("Failed to open device");
     goto out;
   }
 
   // Init and grab libevdev device
-  rc = libevdev_new_from_fd(fd, &dev);
+  rc = libevdev_new_from_fd(fds.fd, &dev);
   if (rc < 0) {
     fprintf(stderr, "Failed to init libevdev (%s)\n", strerror(-rc));
     goto out;
@@ -166,9 +189,22 @@ int main(int argc, char **argv) {
   if (rc) goto out;
 
   do {
+    // Run tap-term timers to decide polling timeout
+    if (!libevdev_has_event_pending(dev)) {
+      int timeout;
+      timeout = handle_tapterm(uidev);
+      rc = poll(&fds, 1, timeout);
+      if (rc < 0) {
+	goto out;
+      }
+      if (rc == 0) {
+	rc = -EAGAIN;
+	continue;
+      }
+    }
+
     struct input_event ev;
-    rc = libevdev_next_event(
-        dev, LIBEVDEV_READ_FLAG_NORMAL | LIBEVDEV_READ_FLAG_BLOCKING, &ev);
+    rc = libevdev_next_event(dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
 
     if (rc == LIBEVDEV_READ_STATUS_SUCCESS) {
       // Only relay to uinput while grab is active
