@@ -1,9 +1,7 @@
-CC = gcc
-CFLAGS = -g -Wall $(shell pkg-config --cflags libevdev)
-LDFLAGS = $(shell pkg-config --libs libevdev)
+CC := gcc
+CFLAGS := -Wall -Wextra -Wpedantic $(shell pkg-config --cflags libevdev)
+LDFLAGS := $(shell pkg-config --libs libevdev)
 
-key-remap: key-remap.o
+.PHONY := all
 
-
-compile_flags.txt: Makefile
-	printf '%s\n' $(CFLAGS) > $@
+all: key-remap

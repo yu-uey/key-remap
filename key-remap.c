@@ -9,7 +9,7 @@
 
 // track keys that are pressed after a mod-tap is pressed
 unsigned int tracked_key[10];
-unsigned int tracked_keys = 0;
+int tracked_keys = 0;
 
 typedef struct {
 	const unsigned int tap;
@@ -18,13 +18,15 @@ typedef struct {
 	long time_ms;
 } modtap;
 
+const long tapterm = 250; // ms
+
 modtap modtaps[] = {
-	{KEY_D, KEY_LEFTCTRL},
-	{KEY_K, KEY_LEFTCTRL},
-	{KEY_S, KEY_LEFTALT},
-	{KEY_L, KEY_LEFTALT},
-	{KEY_A, KEY_LEFTMETA},
-	{KEY_SEMICOLON, KEY_LEFTMETA},
+	{.tap = KEY_D, .mod = KEY_LEFTCTRL},
+	{.tap = KEY_K, .mod = KEY_LEFTCTRL},
+	{.tap = KEY_S, .mod = KEY_LEFTALT},
+	{.tap = KEY_L, .mod = KEY_LEFTALT},
+	{.tap = KEY_A, .mod = KEY_LEFTMETA},
+	{.tap = KEY_SEMICOLON, .mod = KEY_LEFTMETA},
 };
 
 const int n_modtaps = sizeof(modtaps) / sizeof(modtap);
@@ -107,7 +109,7 @@ int handle_tapterm(const struct libevdev_uinput *uidev) {
 
 	for (int i = 0; i < n_modtaps; i++) {
 		if (!modtaps[i].active && modtaps[i].time_ms) {
-			long delta = 250l + modtaps[i].time_ms - now;
+			long delta = tapterm + modtaps[i].time_ms - now;
 			if (delta <= 0) {
 				// Send mod key if tap-term expired
 				modtaps[i].active = 1;
@@ -170,6 +172,7 @@ int main(int argc, char **argv) {
 
 	// Open the file
 	if (argc < 2) {
+		fprintf(stderr, "Usage: %s DEVICE\n", argv[0]);
 		goto out;
 	}
 	file = argv[1];
